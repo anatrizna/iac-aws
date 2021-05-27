@@ -1,0 +1,153 @@
+Parameters:
+  AvailabilityZone1:
+    Description: The first availability zone in the region
+    Type: AWS::EC2::AvailabilityZone::Name
+    ConstraintDescription: Must be a valid availability zone
+
+  AvailabilityZone2:
+    Description: The second availability zone in the region
+    Type: AWS::EC2::AvailabilityZone::Name
+    ConstraintDescription: Must be a valid availability zone
+  KeyName:
+    Description: Name of an existing EC2 key pair for SSH access to the EC2 instance.
+    Type: AWS::EC2::KeyPair::KeyName
+  SSHLocation:
+    Description: The IP address range that can be used to SSH to the EC2 instances
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 0.0.0.0/0
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+
+Resources:
+
+#CREATING AND CONFIGURING VPC
+#Creating a new VPC
+    MyVPC:
+        Type: 'AWS::EC2::VPC'
+        Properties:
+          CidrBlock: 10.0.0.0/16
+
+#Allocating new EIP to use for VPC NatGateway
+    MyEIP:
+        Type: AWS::EC2::EIP
+        Properties:
+            Domain: vpc
+
+#Public subnet in VPC for resources that needs to be connected to internet
+    PublicSubnet:
+        Type: 'AWS::EC2::Subnet'
+        Properties:
+          VpcId: !Ref MyVPC
+          AvailabilityZone: Ref! AvailabilityZone1
+          CidrBlock: 10.0.1.0/24
+          MapPublicIpOnLaunch: true
+
+#Private subnet in VPC for resources that should remain with no connection to internet
+    PrivateSubnet:
+        Type: 'AWS::EC2::Subnet'
+        Properties:
+          VpcId: !Ref MyVPC
+          AvailabilityZone: Ref! AvailabilityZone2
+          CidrBlock: 10.0.2.0/24
+          MapPublicIpOnLaunch: false
+
+#Creating gateway
+    InternetGateway:
+        Type: 'AWS::EC2::InternetGateway'
+        Properties:
+          Tags:
+            - Key: Network
+              Value: Public
+
+#Associate an Internet gateway with a VPC
+    GatewayToInternet:
+        Type: 'AWS::EC2::VPCGatewayAttachment'
+        Properties:
+          VpcId: !Ref VPC
+          InternetGatewayId: !Ref InternetGateway
+
+#Creating custom route table
+    PublicRouteTable:
+        Type: 'AWS::EC2::RouteTable'
+        Properties:
+          VpcId: !Ref MyVPC
+          Tags:
+            - Key: Network
+              Value: Public
+
+#Associating it with public network and internet gateway
+    PublicRoute:
+        Type: 'AWS::EC2::Route'
+        DependsOn: GatewayToInternet
+        Properties:
+          RouteTableId: !Ref PublicRouteTable
+          DestinationCidrBlock: 0.0.0.0/0
+          GatewayId: !Ref InternetGateway
+
+#Associating route with public subnet
+    PublicSubnetRouteTableAssociation:
+        Type: 'AWS::EC2::SubnetRouteTableAssociation'
+        Properties:
+          SubnetId: !Ref PublicSubnet
+          RouteTableId: !Ref PublicRouteTable
+
+#Enabling resources from private subnet to connect to internet but preventing internet from initiating the connection by using NAT gateway
+#NAT gateways should be placed in public subnets to have access to a network
+    NatGateway:
+        Type: "AWS::EC2::NatGateway"
+        DependsOn: MyEIP
+        Properties: 
+            AllocationId: !Ref MyEIP
+            SubnetId: !Ref PublicSubnet
+
+#Modifying private subnet route table to allow traffic to go through NAT gateway
+    PrivateRouteTable:
+        Type: 'AWS::EC2::RouteTable'
+        Properties:
+          VpcId: !Ref MyVPC
+          Tags:
+            - Key: Network
+              Value: Private
+
+#Poining to NAT gateway 
+    PrivateRoute:
+        Type: 'AWS::EC2::Route'
+        Properties:
+          RouteTableId: !Ref PrivateRouteTable
+          DestinationCidrBlock: 0.0.0.0/0
+          NatGatewayId: !Ref NatGateway
+          
+#Associating with private subnet
+    PrivateSubnetRouteTableAssociation:
+        Type: 'AWS::EC2::SubnetRouteTableAssociation'
+        Properties:
+          SubnetId: !Ref PrivateSubnet
+          RouteTableId: !Ref PrivateRouteTable
+
+#CREATING AND CONFIGURING SECURITY GROUPS
+    WebServerSecurityGroup:
+        Type: AWS::EC2::SecurityGroup
+        Properties:
+            VpcID: MyVPC
+            SecurityGroupIngress:
+            - CidrIp: 0.0.0.0/0
+              FromPort: '80'
+              IpProtocol: tcp
+              ToPort: '80'
+            - CidrIp: !Ref SSHLocation
+              FromPort: '22'
+              IpProtocol: tcp
+              ToPort: '22'
+
+    DBSecurityGroup:
+        Type: AWS::EC2::SecurityGroup
+        Properties:
+            VpcID: MyVPC
+             SecurityGroupIngress:
+            - CidrIp: !Ref WebServerSecurityGroup
+              FromPort: '3306'
+              IpProtocol: tcp
+              ToPort: '3306'
+
